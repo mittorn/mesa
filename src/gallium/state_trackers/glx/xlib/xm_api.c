@@ -897,11 +897,11 @@ XMesaVisual XMesaCreateVisual( Display *display,
                                            PIPE_BIND_RENDER_TARGET))
       v->stvis.color_format = PIPE_FORMAT_NONE;
 
-   if (v->stvis.color_format == PIPE_FORMAT_NONE) {
+/*   if (v->stvis.color_format == PIPE_FORMAT_NONE) {
       free(v->visinfo);
       free(v);
       return NULL;
-   }
+   }*/
 
    v->stvis.depth_stencil_format =
       choose_depth_stencil_format(xmdpy, depth_size, stencil_size,

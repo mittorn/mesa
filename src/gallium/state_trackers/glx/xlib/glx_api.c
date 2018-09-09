@@ -748,7 +748,7 @@ choose_visual( Display *dpy, int screen, const int *list, GLboolean fbConfig )
 
    if (xmesa_init( dpy ) != 0) {
       _mesa_warning(NULL, "Failed to initialize display");
-      return NULL;
+//      return NULL;
    }
 
    parselist = list;
