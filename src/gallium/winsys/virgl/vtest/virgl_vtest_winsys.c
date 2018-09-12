@@ -555,7 +555,7 @@ static bool virgl_fence_wait(struct virgl_winsys *vws,
    struct virgl_hw_res *res = virgl_hw_res(fence);
 
    if (timeout == 0)
-      return !virgl_vtest_resource_is_busy(vdws, res);
+      return 1;//!virgl_vtest_resource_is_busy(vdws, res);
 
    if (timeout != PIPE_TIMEOUT_INFINITE) {
       int64_t start_time = os_time_get();
@@ -631,6 +631,8 @@ virgl_vtest_winsys_destroy(struct virgl_winsys *vws)
    virgl_cache_flush(vtws);
 
    mtx_destroy(&vtws->mutex);
+   if( vtws->ring )
+      FREE(vtws->ring);
    FREE(vtws);
 }
 

@@ -49,6 +49,7 @@ struct virgl_vtest_winsys {
    int num_delayed;
    unsigned usecs;
    mtx_t mutex;
+   struct ring_s *ring;
 };
 
 struct virgl_hw_res {

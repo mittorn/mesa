@@ -22,6 +22,7 @@
  */
 
 #include <sys/socket.h>
+#include <arpa/inet.h>
 #include <errno.h>
 #include <stdio.h>
 #include <netinet/in.h>
@@ -30,21 +31,28 @@
 
 #include <os/os_process.h>
 #include <util/u_format.h>
+#include "util/u_memory.h"
 /* connect to remote socket */
 #define VTEST_SOCKET_NAME "/tmp/.virgl_test"
 
 #include "virgl_vtest_winsys.h"
 #include "virgl_vtest_public.h"
+#include "ring.h"
+
 
 /* block read/write routines */
-static int virgl_block_write(int fd, void *buf, int size)
+static int virgl_block_write(struct virgl_vtest_winsys *vws, void *buf, int size)
 {
    void *ptr = buf;
    int left;
    int ret;
+
+   if(vws->ring)
+      return ring_write(vws->ring, buf, size);
+
    left = size;
-   do {
-      ret = write(fd, ptr, left);
+   do { 
+      ret = write(vws->sock_fd, ptr, left);
       if (ret < 0)
          return -errno;
       left -= ret;
@@ -53,14 +61,17 @@ static int virgl_block_write(int fd, void *buf, int size)
    return size;
 }
 
-static int virgl_block_read(int fd, void *buf, int size)
+static int virgl_block_read(struct virgl_vtest_winsys *vws, void *buf, int size)
 {
    void *ptr = buf;
-   int left;
+   int left = size;
    int ret;
+   if(vws->ring)
+      return ring_read(vws->ring, buf, size);
+
    left = size;
    do {
-      ret = read(fd, ptr, left);
+      ret = read(vws->sock_fd, ptr, left);
       if (ret <= 0) {
          fprintf(stderr,
                  "lost connection to rendering server on %d read %d %d\n",
@@ -96,32 +107,68 @@ static int virgl_vtest_send_init(struct virgl_vtest_winsys *vws)
    buf[VTEST_CMD_LEN] = strlen(cmdline) + 1;
    buf[VTEST_CMD_ID] = VCMD_CREATE_RENDERER;
 
-   virgl_block_write(vws->sock_fd, &buf, sizeof(buf));
-   virgl_block_write(vws->sock_fd, (void *)cmdline, strlen(cmdline) + 1);
+   virgl_block_write(vws, &buf, sizeof(buf));
+   virgl_block_write(vws, (void *)cmdline, strlen(cmdline) + 1);
    return 0;
 }
 
 int virgl_vtest_connect(struct virgl_vtest_winsys *vws)
 {
-   struct sockaddr_un un;
    int sock, ret;
+   const char *path = getenv("VTEST_SOCK"), *port;
+   if(!path) path = VTEST_SOCKET_NAME;
 
-   sock = socket(PF_UNIX, SOCK_STREAM, 0);
-   if (sock < 0)
-      return -1;
+   if((port = strchr(path,':')))
+   {
+      struct sockaddr_in in;
 
-   memset(&un, 0, sizeof(un));
-   un.sun_family = AF_UNIX;
-   snprintf(un.sun_path, sizeof(un.sun_path), "%s", VTEST_SOCKET_NAME);
+      sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
 
-   do {
-      ret = 0;
-      if (connect(sock, (struct sockaddr *)&un, sizeof(un)) < 0) {
-         ret = -errno;
-      }
-   } while (ret == -EINTR);
+      if (sock < 0)
+         return -1;
+
+      memset(&in, 0, sizeof(in));
+      in.sin_family = AF_INET;
+      in.sin_port = htons(atoi(port + 1));
+
+      inet_pton(AF_INET, path, &in.sin_addr);
+
+      do {
+         ret = 0;
+         if (connect(sock, (struct sockaddr *)&in, sizeof(in)) < 0) {
+            ret = -errno;
+         }
+      } while (ret == -EINTR);
+   }
+   else
+   {
+      struct sockaddr_un un;
+
+      sock = socket(PF_UNIX, SOCK_STREAM, 0);
+
+      if (sock < 0)
+         return -1;
+
+      memset(&un, 0, sizeof(un));
+      un.sun_family = AF_UNIX;
+      snprintf(un.sun_path, sizeof(un.sun_path), "%s", path);
+
+      do {
+         ret = 0;
+         if (connect(sock, (struct sockaddr *)&un, sizeof(un)) < 0) {
+            ret = -errno;
+         }
+      } while (ret == -EINTR);
+   }
 
    vws->sock_fd = sock;
+   if(getenv("VTEST_RING"))
+   {
+      vws->ring = CALLOC_STRUCT(ring_s);
+      ring_setup(vws->ring, sock);
+      ring_client_handshake(vws->ring, "glshim");
+   }
+
    virgl_vtest_send_init(vws);
    return 0;
 }
@@ -138,9 +185,9 @@ int virgl_vtest_send_get_caps(struct virgl_vtest_winsys *vws,
    get_caps_buf[VTEST_CMD_LEN + 2] = 0;
    get_caps_buf[VTEST_CMD_ID + 2] = VCMD_GET_CAPS;
 
-   virgl_block_write(vws->sock_fd, &get_caps_buf, sizeof(get_caps_buf));
+   virgl_block_write(vws, &get_caps_buf, sizeof(get_caps_buf));
 
-   ret = virgl_block_read(vws->sock_fd, resp_buf, sizeof(resp_buf));
+   ret = virgl_block_read(vws, resp_buf, sizeof(resp_buf));
    if (ret <= 0)
       return 0;
 
@@ -153,18 +200,18 @@ int virgl_vtest_send_get_caps(struct virgl_vtest_winsys *vws,
 	   resp_size = caps_size;
        }
 
-       ret = virgl_block_read(vws->sock_fd, &caps->caps, resp_size);
+       ret = virgl_block_read(vws, &caps->caps, resp_size);
 
        if (dummy_size)
-	   ret = virgl_block_read(vws->sock_fd, &dummy, dummy_size);
+	   ret = virgl_block_read(vws, &dummy, dummy_size);
 
        /* now read back the pointless caps v1 we requested */
-       ret = virgl_block_read(vws->sock_fd, resp_buf, sizeof(resp_buf));
+       ret = virgl_block_read(vws, resp_buf, sizeof(resp_buf));
        if (ret <= 0)
 	   return 0;
-       ret = virgl_block_read(vws->sock_fd, &dummy, sizeof(struct virgl_caps_v1));
+       ret = virgl_block_read(vws, &dummy, sizeof(struct virgl_caps_v1));
    } else
-       ret = virgl_block_read(vws->sock_fd, &caps->caps, sizeof(struct virgl_caps_v1));
+       ret = virgl_block_read(vws, &caps->caps, sizeof(struct virgl_caps_v1));
 
    return 0;
 }
@@ -197,8 +244,8 @@ int virgl_vtest_send_resource_create(struct virgl_vtest_winsys *vws,
    res_create_buf[VCMD_RES_CREATE_LAST_LEVEL] = last_level;
    res_create_buf[VCMD_RES_CREATE_NR_SAMPLES] = nr_samples;
 
-   virgl_block_write(vws->sock_fd, &vtest_hdr, sizeof(vtest_hdr));
-   virgl_block_write(vws->sock_fd, &res_create_buf, sizeof(res_create_buf));
+   virgl_block_write(vws, &vtest_hdr, sizeof(vtest_hdr));
+   virgl_block_write(vws, &res_create_buf, sizeof(res_create_buf));
 
    return 0;
 }
@@ -211,8 +258,8 @@ int virgl_vtest_submit_cmd(struct virgl_vtest_winsys *vws,
    vtest_hdr[VTEST_CMD_LEN] = cbuf->base.cdw;
    vtest_hdr[VTEST_CMD_ID] = VCMD_SUBMIT_CMD;
 
-   virgl_block_write(vws->sock_fd, &vtest_hdr, sizeof(vtest_hdr));
-   virgl_block_write(vws->sock_fd, cbuf->buf, cbuf->base.cdw * 4);
+   virgl_block_write(vws, &vtest_hdr, sizeof(vtest_hdr));
+   virgl_block_write(vws, cbuf->buf, cbuf->base.cdw * 4);
    return 0;
 }
 
@@ -225,8 +272,8 @@ int virgl_vtest_send_resource_unref(struct virgl_vtest_winsys *vws,
    vtest_hdr[VTEST_CMD_ID] = VCMD_RESOURCE_UNREF;
 
    cmd[0] = handle;
-   virgl_block_write(vws->sock_fd, &vtest_hdr, sizeof(vtest_hdr));
-   virgl_block_write(vws->sock_fd, &cmd, sizeof(cmd));
+   virgl_block_write(vws, &vtest_hdr, sizeof(vtest_hdr));
+   virgl_block_write(vws, &cmd, sizeof(cmd));
    return 0;
 }
 
@@ -257,8 +304,8 @@ int virgl_vtest_send_transfer_cmd(struct virgl_vtest_winsys *vws,
    cmd[8] = box->height;
    cmd[9] = box->depth;
    cmd[10] = data_size;
-   virgl_block_write(vws->sock_fd, &vtest_hdr, sizeof(vtest_hdr));
-   virgl_block_write(vws->sock_fd, &cmd, sizeof(cmd));
+   virgl_block_write(vws, &vtest_hdr, sizeof(vtest_hdr));
+   virgl_block_write(vws, &cmd, sizeof(cmd));
 
    return 0;
 }
@@ -267,7 +314,7 @@ int virgl_vtest_send_transfer_put_data(struct virgl_vtest_winsys *vws,
                                        void *data,
                                        uint32_t data_size)
 {
-   return virgl_block_write(vws->sock_fd, data, data_size);
+   return virgl_block_write(vws, data, data_size);
 }
 
 int virgl_vtest_recv_transfer_get_data(struct virgl_vtest_winsys *vws,
@@ -283,7 +330,8 @@ int virgl_vtest_recv_transfer_get_data(struct virgl_vtest_winsys *vws,
 
    line = malloc(stride);
    while (hblocks) {
-      virgl_block_read(vws->sock_fd, line, stride);
+      virgl_block_read(vws, line, stride);
+      ring_sync_write(vws->ring);
       memcpy(ptr, line, util_format_get_stride(format, box->width));
       ptr += stride;
       hblocks--;
@@ -304,12 +352,12 @@ int virgl_vtest_busy_wait(struct virgl_vtest_winsys *vws, int handle,
    cmd[VCMD_BUSY_WAIT_HANDLE] = handle;
    cmd[VCMD_BUSY_WAIT_FLAGS] = flags;
 
-   virgl_block_write(vws->sock_fd, &vtest_hdr, sizeof(vtest_hdr));
-   virgl_block_write(vws->sock_fd, &cmd, sizeof(cmd));
+   virgl_block_write(vws, &vtest_hdr, sizeof(vtest_hdr));
+   virgl_block_write(vws, &cmd, sizeof(cmd));
 
-   ret = virgl_block_read(vws->sock_fd, vtest_hdr, sizeof(vtest_hdr));
+   ret = virgl_block_read(vws, vtest_hdr, sizeof(vtest_hdr));
    assert(ret);
-   ret = virgl_block_read(vws->sock_fd, result, sizeof(result));
+   ret = virgl_block_read(vws, result, sizeof(result));
    assert(ret);
    return result[0];
 }
