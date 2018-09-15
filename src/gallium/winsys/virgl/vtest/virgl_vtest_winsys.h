@@ -147,4 +147,13 @@ int virgl_vtest_recv_transfer_get_data(struct virgl_vtest_winsys *vws,
 
 int virgl_vtest_busy_wait(struct virgl_vtest_winsys *vws, int handle,
                           int flags);
+int virgl_vtest_send_flush_frontbuffer(struct virgl_vtest_winsys *vws,
+					uint32_t drawable,
+					uint32_t x,
+					uint32_t y,
+					uint32_t w,
+					uint32_t h,
+					uint32_t w_x,
+					uint32_t w_y);
+
 #endif

@@ -26,9 +26,13 @@
 #include "util/u_inlines.h"
 #include "util/os_time.h"
 #include "state_tracker/sw_winsys.h"
+#include "state_tracker/xlibsw_api.h"
 
 #include "virgl_vtest_winsys.h"
 #include "virgl_vtest_public.h"
+
+DEBUG_GET_ONCE_BOOL_OPTION(no_readback, "VTEST_NO_READBACK", false)
+DEBUG_GET_ONCE_BOOL_OPTION(pos_track, "VTEST_POS_TRACKING", false)
 
 static void *virgl_vtest_resource_map(struct virgl_winsys *vws,
                                       struct virgl_hw_res *res);
@@ -580,6 +584,32 @@ static void virgl_fence_reference(struct virgl_winsys *vws,
                                   virgl_hw_res(src));
 }
 
+
+static struct pos_track
+{
+Display *dpy;
+Drawable drawable;
+int x,y;
+} pos_track;
+
+static void* virgl_vtest_pos_track_thread(void* arg) {
+    XEvent event;
+    XSelectInput(pos_track.dpy, pos_track.drawable,StructureNotifyMask);
+    while(true) {
+	XNextEvent(pos_track.dpy, &event);
+	switch(event.type) {
+	    case ConfigureNotify:
+		pos_track.x = event.xconfigure.x;
+		pos_track.y = event.xconfigure.y;
+		break;
+	    default:
+		return NULL;
+	}
+
+    }
+}
+
+
 static void virgl_vtest_flush_frontbuffer(struct virgl_winsys *vws,
                                           struct virgl_hw_res *res,
                                           unsigned level, unsigned layer,
@@ -591,6 +621,10 @@ static void virgl_vtest_flush_frontbuffer(struct virgl_winsys *vws,
    void *map;
    uint32_t size;
    uint32_t offset = 0, valid_stride;
+   struct xlib_drawable *dr = (struct xlib_drawable*)winsys_drawable_handle;
+
+
+
    if (!res->dt)
       return;
 
@@ -610,6 +644,31 @@ static void virgl_vtest_flush_frontbuffer(struct virgl_winsys *vws,
    size = vtest_get_transfer_size(res, &box, res->stride, 0, level, &valid_stride);
 
    virgl_vtest_busy_wait(vtws, res->res_handle, VCMD_BUSY_WAIT_FLAG_WAIT);
+
+   if( !pos_track.dpy && debug_get_option_pos_track() )
+   {
+      // if driver cannot interact with x-server,
+      // add ability to draw overlay window
+      // with correct postition. set move notifier to get it
+      pthread_t wthread;
+
+      pos_track.dpy = XOpenDisplay(NULL);
+      pos_track.drawable = dr->drawable;
+
+      pthread_create(&wthread,NULL,virgl_vtest_pos_track_thread,NULL);
+
+      // emit configure event to get initial position
+      XResizeWindow( pos_track.dpy, pos_track.drawable, res->width, res->height );
+   }
+//   printf("geom %d %d %d %d %d\n",pos_track.x,pos_track.y, box.z,  box.x, box.y);
+
+   if( debug_get_option_no_readback() )
+   {
+      virgl_vtest_send_flush_frontbuffer(virgl_vtest_winsys(vws), (uint32_t)dr->drawable, box.x, box.y, box.width, box.height, pos_track.x,pos_track.y);
+      return;
+   }
+
+
    map = vtws->sws->displaytarget_map(vtws->sws, res->dt, 0);
 
    /* execute a transfer */

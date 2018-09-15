@@ -112,6 +112,8 @@ static int virgl_vtest_send_init(struct virgl_vtest_winsys *vws)
    return 0;
 }
 
+DEBUG_GET_ONCE_BOOL_OPTION(ring, "VTEST_RING", false)
+
 int virgl_vtest_connect(struct virgl_vtest_winsys *vws)
 {
    int sock, ret;
@@ -162,7 +164,7 @@ int virgl_vtest_connect(struct virgl_vtest_winsys *vws)
    }
 
    vws->sock_fd = sock;
-   if(getenv("VTEST_RING"))
+   if(debug_get_option_ring())
    {
       vws->ring = CALLOC_STRUCT(ring_s);
       ring_setup(vws->ring, sock);
@@ -246,6 +248,34 @@ int virgl_vtest_send_resource_create(struct virgl_vtest_winsys *vws,
 
    virgl_block_write(vws, &vtest_hdr, sizeof(vtest_hdr));
    virgl_block_write(vws, &res_create_buf, sizeof(res_create_buf));
+
+   return 0;
+}
+
+int virgl_vtest_send_flush_frontbuffer(struct virgl_vtest_winsys *vws,
+					uint32_t drawable,
+					uint32_t x,
+					uint32_t y,
+					uint32_t w,
+					uint32_t h,
+					uint32_t w_x,
+					uint32_t w_y)
+{
+   uint32_t flush_buf[VCMD_FLUSH_SIZE], vtest_hdr[VTEST_HDR_SIZE];
+
+   vtest_hdr[VTEST_CMD_LEN] = VCMD_FLUSH_SIZE;
+   vtest_hdr[VTEST_CMD_ID] = VCMD_FLUSH_FRONTBUFFER;
+
+   flush_buf[VCMD_FLUSH_DRAWABLE] = drawable;
+   flush_buf[VCMD_FLUSH_X] = x;
+   flush_buf[VCMD_FLUSH_Y] = y;
+   flush_buf[VCMD_FLUSH_WIDTH] = w;
+   flush_buf[VCMD_FLUSH_HEIGHT] = h;
+   flush_buf[VCMD_FLUSH_W_X] = w_x;
+   flush_buf[VCMD_FLUSH_W_Y] = w_y;
+
+   virgl_block_write(vws, &vtest_hdr, sizeof(vtest_hdr));
+   virgl_block_write(vws, &flush_buf, sizeof(flush_buf));
 
    return 0;
 }
