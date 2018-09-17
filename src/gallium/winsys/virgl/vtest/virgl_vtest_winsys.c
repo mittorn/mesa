@@ -660,11 +660,13 @@ static void virgl_vtest_flush_frontbuffer(struct virgl_winsys *vws,
       // emit configure event to get initial position
       XResizeWindow( pos_track.dpy, pos_track.drawable, res->width, res->height );
    }
+
+//   printf("ll %d %d\n", level, layer);
 //   printf("geom %d %d %d %d %d\n",pos_track.x,pos_track.y, box.z,  box.x, box.y);
 
    if( debug_get_option_no_readback() )
    {
-      virgl_vtest_send_flush_frontbuffer(virgl_vtest_winsys(vws), (uint32_t)dr->drawable, box.x, box.y, box.width, box.height, pos_track.x,pos_track.y);
+      virgl_vtest_send_flush_frontbuffer(virgl_vtest_winsys(vws), (uint32_t)dr->drawable, box.x, box.y, box.width, box.height, pos_track.x,pos_track.y, res->res_handle);
       return;
    }
 

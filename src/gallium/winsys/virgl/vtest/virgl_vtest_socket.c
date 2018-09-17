@@ -122,6 +122,7 @@ int virgl_vtest_connect(struct virgl_vtest_winsys *vws)
 
    if((port = strchr(path,':')))
    {
+      char host[32] = "";
       struct sockaddr_in in;
 
       sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -132,8 +133,8 @@ int virgl_vtest_connect(struct virgl_vtest_winsys *vws)
       memset(&in, 0, sizeof(in));
       in.sin_family = AF_INET;
       in.sin_port = htons(atoi(port + 1));
-
-      inet_pton(AF_INET, path, &in.sin_addr);
+      memcpy( host, path, port - path);
+      inet_pton(AF_INET, host, &in.sin_addr);
 
       do {
          ret = 0;
@@ -259,7 +260,8 @@ int virgl_vtest_send_flush_frontbuffer(struct virgl_vtest_winsys *vws,
 					uint32_t w,
 					uint32_t h,
 					uint32_t w_x,
-					uint32_t w_y)
+					uint32_t w_y,
+					uint32_t handle)
 {
    uint32_t flush_buf[VCMD_FLUSH_SIZE], vtest_hdr[VTEST_HDR_SIZE];
 
@@ -273,6 +275,7 @@ int virgl_vtest_send_flush_frontbuffer(struct virgl_vtest_winsys *vws,
    flush_buf[VCMD_FLUSH_HEIGHT] = h;
    flush_buf[VCMD_FLUSH_W_X] = w_x;
    flush_buf[VCMD_FLUSH_W_Y] = w_y;
+   flush_buf[VCMD_FLUSH_HANDLE] = handle;
 
    virgl_block_write(vws, &vtest_hdr, sizeof(vtest_hdr));
    virgl_block_write(vws, &flush_buf, sizeof(flush_buf));
@@ -361,7 +364,8 @@ int virgl_vtest_recv_transfer_get_data(struct virgl_vtest_winsys *vws,
    line = malloc(stride);
    while (hblocks) {
       virgl_block_read(vws, line, stride);
-      ring_sync_write(vws->ring);
+      if(vws->ring)
+         ring_sync_write(vws->ring);
       memcpy(ptr, line, util_format_get_stride(format, box->width));
       ptr += stride;
       hblocks--;
