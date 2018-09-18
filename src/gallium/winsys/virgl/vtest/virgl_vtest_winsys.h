@@ -154,6 +154,7 @@ int virgl_vtest_send_flush_frontbuffer(struct virgl_vtest_winsys *vws,
 					uint32_t w,
 					uint32_t h,
 					uint32_t w_x,
-					uint32_t w_y);
+					uint32_t w_y,
+					uint32_t handle);
 
 #endif

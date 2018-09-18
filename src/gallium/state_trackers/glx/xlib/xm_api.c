@@ -452,7 +452,7 @@ choose_pixel_format(XMesaVisual v)
       return PIPE_FORMAT_B5G6R5_UNORM;
    }
 
-   return PIPE_FORMAT_NONE;
+   return  PIPE_FORMAT_RGBA8888_UNORM;//PIPE_FORMAT_NONE;
 }
 
 
@@ -890,18 +890,18 @@ XMesaVisual XMesaCreateVisual( Display *display,
    v->stvis.color_format = choose_pixel_format(v);
 
    /* Check format support at requested num_samples (for multisample) */
-   if (!xmdpy->screen->is_format_supported(xmdpy->screen,
+/*   if (!xmdpy->screen->is_format_supported(xmdpy->screen,
                                            v->stvis.color_format,
                                            PIPE_TEXTURE_2D, num_samples,
                                            num_samples,
-                                           PIPE_BIND_RENDER_TARGET))
-      v->stvis.color_format = PIPE_FORMAT_NONE;
+                                           PIPE_BIND_RENDER_TARGET)) */
+    //  v->stvis.color_format = PIPE_FORMAT_NONE;
 
-/*   if (v->stvis.color_format == PIPE_FORMAT_NONE) {
+   if (v->stvis.color_format == PIPE_FORMAT_NONE) {
       free(v->visinfo);
       free(v);
       return NULL;
-   }*/
+   }
 
    v->stvis.depth_stencil_format =
       choose_depth_stencil_format(xmdpy, depth_size, stencil_size,
