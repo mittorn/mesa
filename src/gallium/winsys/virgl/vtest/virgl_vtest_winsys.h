@@ -50,6 +50,7 @@ struct virgl_vtest_winsys {
    unsigned usecs;
    mtx_t mutex;
    struct ring_s *ring;
+   uint32_t dt_set;
 };
 
 struct virgl_hw_res {
@@ -65,7 +66,7 @@ struct virgl_hw_res {
    uint32_t width;
    uint32_t height;
 
-   struct sw_displaytarget *dt;
+   struct vtest_displaytarget *dt;
    void *mapped;
 
    struct list_head head;
@@ -147,14 +148,14 @@ int virgl_vtest_recv_transfer_get_data(struct virgl_vtest_winsys *vws,
 
 int virgl_vtest_busy_wait(struct virgl_vtest_winsys *vws, int handle,
                           int flags);
-int virgl_vtest_send_flush_frontbuffer(struct virgl_vtest_winsys *vws,
-					uint32_t drawable,
+int virgl_vtest_send_dt(struct virgl_vtest_winsys *vws,
+					uint32_t cmd,
 					uint32_t x,
 					uint32_t y,
 					uint32_t w,
 					uint32_t h,
-					uint32_t w_x,
-					uint32_t w_y,
-					uint32_t handle);
+					uint32_t id,
+					uint32_t handle,
+					uint32_t drawable);
 
 #endif

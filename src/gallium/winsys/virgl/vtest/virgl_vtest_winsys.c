@@ -25,6 +25,7 @@
 #include "util/u_format.h"
 #include "util/u_inlines.h"
 #include "util/os_time.h"
+#include "util/u_debug.h"
 #include "state_tracker/sw_winsys.h"
 #include "state_tracker/xlibsw_api.h"
 
@@ -119,12 +120,58 @@ virgl_vtest_transfer_get(struct virgl_winsys *vws,
    return 0;
 }
 
+struct vtest_displaytarget
+{
+struct sw_displaytarget *sws_dt;
+Drawable drawable;
+int x,y,w,h;
+int vis;
+uint32_t id;
+};
+
+static void vtest_displaytarget_destroy(struct virgl_vtest_winsys *vtws, 
+                                        struct vtest_displaytarget *dt)
+{
+   virgl_vtest_send_dt(vtws, VCMD_DT_CMD_DESTROY, 0, 0, 0, 0, dt->id, 0, 0);
+   vtws->sws->displaytarget_destroy(vtws->sws, dt->sws_dt);
+   vtws->dt_set &= ~(1 << dt->id);
+   FREE(dt);
+}
+
+static struct vtest_displaytarget *
+vtest_displaytarget_create(struct virgl_vtest_winsys *vtws,
+                          unsigned tex_usage,
+                          enum pipe_format format,
+                          unsigned width, unsigned height,
+                          unsigned alignment,
+                          const void *front_private,
+                          unsigned *stride)
+{
+   struct vtest_displaytarget *dt;
+   int id = 0;
+
+   // allocate handle (0<=handle<32) for remote dt
+   while((vtws->dt_set & (1<<id)) && (id < 32)) id++;
+
+   if(id == 32)
+      return NULL;
+
+   dt = CALLOC_STRUCT(vtest_displaytarget);
+   dt->id = id;
+   dt->sws_dt = vtws->sws->displaytarget_create(vtws->sws, tex_usage, format,
+                                                width, height, alignment, front_private,
+                                                stride);
+
+   virgl_vtest_send_dt(vtws, VCMD_DT_CMD_CREATE, 0, 0, width, height, id, 0, 0);
+   vtws->dt_set |= 1 << id;
+   return dt;
+}
 static void virgl_hw_res_destroy(struct virgl_vtest_winsys *vtws,
                                  struct virgl_hw_res *res)
 {
    virgl_vtest_send_resource_unref(vtws, res->res_handle);
    if (res->dt)
-      vtws->sws->displaytarget_destroy(vtws->sws, res->dt);
+      vtest_displaytarget_destroy(vtws, res->dt);
    free(res->ptr);
    FREE(res);
 }
@@ -228,7 +275,7 @@ virgl_vtest_winsys_resource_create(struct virgl_winsys *vws,
       return NULL;
 
    if (bind & (VIRGL_BIND_DISPLAY_TARGET | VIRGL_BIND_SCANOUT)) {
-      res->dt = vtws->sws->displaytarget_create(vtws->sws, bind, format,
+      res->dt = vtest_displaytarget_create(vtws, bind, format,
                                                 width, height, 64, NULL,
                                                 &res->stride);
 
@@ -266,7 +313,7 @@ static void *virgl_vtest_resource_map(struct virgl_winsys *vws,
    struct virgl_vtest_winsys *vtws = virgl_vtest_winsys(vws);
 
    if (res->dt) {
-      return vtws->sws->displaytarget_map(vtws->sws, res->dt, 0);
+      return vtws->sws->displaytarget_map(vtws->sws, res->dt->sws_dt, 0);
    } else {
       res->mapped = res->ptr;
       return res->mapped;
@@ -281,7 +328,7 @@ static void virgl_vtest_resource_unmap(struct virgl_winsys *vws,
       res->mapped = NULL;
 
    if (res->dt)
-      vtws->sws->displaytarget_unmap(vtws->sws, res->dt);
+      vtws->sws->displaytarget_unmap(vtws->sws, res->dt->sws_dt);
 }
 
 static void virgl_vtest_resource_wait(struct virgl_winsys *vws,
@@ -585,25 +632,45 @@ static void virgl_fence_reference(struct virgl_winsys *vws,
 }
 
 
+struct win_state
+{
+};
+
 static struct pos_track
 {
 Display *dpy;
 Drawable drawable;
-int x,y;
+int x,y,w,h;
+int vis;
 } pos_track;
 
-static void* virgl_vtest_pos_track_thread(void* arg) {
+void* virgl_vtest_pos_track_thread(void* arg);
+
+
+void* virgl_vtest_pos_track_thread(void* arg) {
+
     XEvent event;
-    XSelectInput(pos_track.dpy, pos_track.drawable,StructureNotifyMask);
+    XSelectInput(pos_track.dpy, pos_track.drawable,StructureNotifyMask|VisibilityChangeMask);
+    XFlush(pos_track.dpy);
     while(true) {
 	XNextEvent(pos_track.dpy, &event);
 	switch(event.type) {
 	    case ConfigureNotify:
 		pos_track.x = event.xconfigure.x;
 		pos_track.y = event.xconfigure.y;
+		//printf("configure %d %d\n", pos_track.x, pos_track.y);
 		break;
+		case VisibilityNotify:
+		//printf("visibility %d\n",event.xvisibility.state);
+		pos_track.vis = event.xvisibility.state;
+		break;
+		/*switch(event.xvisibility.state)
+		{
+		case VisibilityUnobscured
+		}*/
 	    default:
 		return NULL;
+		break;
 	}
 
     }
@@ -622,10 +689,9 @@ static void virgl_vtest_flush_frontbuffer(struct virgl_winsys *vws,
    uint32_t size;
    uint32_t offset = 0, valid_stride;
    struct xlib_drawable *dr = (struct xlib_drawable*)winsys_drawable_handle;
+   struct vtest_displaytarget *dt = res->dt;
 
-
-
-   if (!res->dt)
+   if (!dt)
       return;
 
    memset(&box, 0, sizeof(box));
@@ -645,42 +711,88 @@ static void virgl_vtest_flush_frontbuffer(struct virgl_winsys *vws,
 
    virgl_vtest_busy_wait(vtws, res->res_handle, VCMD_BUSY_WAIT_FLAG_WAIT);
 
-   if( !pos_track.dpy && debug_get_option_pos_track() )
+
+    XEvent event;
+   if( !pos_track.dpy )
    {
       // if driver cannot interact with x-server,
       // add ability to draw overlay window
       // with correct postition. set move notifier to get it
-      pthread_t wthread;
+   //   pthread_t wthread;
+     // XInitThreads();
 
       pos_track.dpy = XOpenDisplay(NULL);
-      pos_track.drawable = dr->drawable;
-
-      pthread_create(&wthread,NULL,virgl_vtest_pos_track_thread,NULL);
-
+     // pos_track.drawable = dr->drawable;
+ XSelectInput(pos_track.dpy, dr->drawable,StructureNotifyMask|VisibilityChangeMask);
+ XFlush(pos_track.dpy);;
+   
+//      pthread_create(&wthread,NULL,virgl_vtest_pos_track_thread,NULL);
+      usleep(100000);
       // emit configure event to get initial position
-      XResizeWindow( pos_track.dpy, pos_track.drawable, res->width, res->height );
+      XResizeWindow( pos_track.dpy, dr->drawable, res->width, res->height );
+      XFlush(pos_track.dpy);
+      // wait while thread get it
+      usleep(100000);
    }
+else
+    XSelectInput(pos_track.dpy, dr->drawable,StructureNotifyMask|VisibilityChangeMask);
+    bool changed = false;
+   // XFlush(pos_track.dpy);
+    while(XPending(pos_track.dpy)) {
+	XNextEvent(pos_track.dpy, &event);
+	switch(event.type) {
+	    case ConfigureNotify:
+	    
+		dt->w = event.xconfigure.width;
+		dt->h = event.xconfigure.height;
+		if(event.xconfigure.send_event)
+		{
+		dt->x = event.xconfigure.x;
+		dt->y = event.xconfigure.y;
+		};
+		changed = true;
+		//printf("configure %d %d\n", pos_track.x, pos_track.y);
+		break;
+		case VisibilityNotify:
+		//printf("visibility %d\n",event.xvisibility.state);
+		dt->vis = event.xvisibility.state;
+		changed = true;
+		break;
+		/*switch(event.xvisibility.state)
+		{
+		case VisibilityUnobscured
+		}*/
+	    default:
+		break;
+	}
+
+    }
 
 //   printf("ll %d %d\n", level, layer);
 //   printf("geom %d %d %d %d %d\n",pos_track.x,pos_track.y, box.z,  box.x, box.y);
 
-   if( debug_get_option_no_readback() )
-   {
-      virgl_vtest_send_flush_frontbuffer(virgl_vtest_winsys(vws), (uint32_t)dr->drawable, box.x, box.y, box.width, box.height, pos_track.x,pos_track.y, res->res_handle);
+
+   if( changed )
+      virgl_vtest_send_dt(virgl_vtest_winsys(vws), VCMD_DT_CMD_SET_RECT, dt->x, dt->y, dt->w, dt->h, dt->id, 0, dt->vis == 0);
+   if( !dt->vis )
+      virgl_vtest_send_dt(virgl_vtest_winsys(vws), VCMD_DT_CMD_FLUSH, box.x, box.y, box.width, box.height, dt->id, res->res_handle, (uint32_t)dr->drawable);
+
+   if( (dt->vis != 1) && dt->drawable )
       return;
-   }
 
+   dt->drawable = dr->drawable;
 
-   map = vtws->sws->displaytarget_map(vtws->sws, res->dt, 0);
+   map = vtws->sws->displaytarget_map(vtws->sws, res->dt->sws_dt, 0);
 
    /* execute a transfer */
    virgl_vtest_send_transfer_cmd(vtws, VCMD_TRANSFER_GET, res->res_handle,
                                  level, res->stride, 0, &box, size);
+
    virgl_vtest_recv_transfer_get_data(vtws, map + offset, size, valid_stride,
                                       &box, res->format);
-   vtws->sws->displaytarget_unmap(vtws->sws, res->dt);
+   vtws->sws->displaytarget_unmap(vtws->sws, res->dt->sws_dt);
 
-   vtws->sws->displaytarget_display(vtws->sws, res->dt, winsys_drawable_handle,
+   vtws->sws->displaytarget_display(vtws->sws, res->dt->sws_dt, winsys_drawable_handle,
                                     sub_box);
 }
 
@@ -706,7 +818,8 @@ virgl_vtest_winsys_wrap(struct sw_winsys *sws)
    if (!vtws)
       return NULL;
 
-   virgl_vtest_connect(vtws);
+   while(virgl_vtest_connect(vtws));
+      usleep(100000);
    vtws->sws = sws;
 
    vtws->usecs = 1000000;

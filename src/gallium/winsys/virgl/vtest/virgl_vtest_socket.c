@@ -253,29 +253,28 @@ int virgl_vtest_send_resource_create(struct virgl_vtest_winsys *vws,
    return 0;
 }
 
-int virgl_vtest_send_flush_frontbuffer(struct virgl_vtest_winsys *vws,
-					uint32_t drawable,
+int virgl_vtest_send_dt(struct virgl_vtest_winsys *vws,
+					uint32_t cmd,
 					uint32_t x,
 					uint32_t y,
 					uint32_t w,
 					uint32_t h,
-					uint32_t w_x,
-					uint32_t w_y,
-					uint32_t handle)
+					uint32_t id,
+					uint32_t handle,
+					uint32_t drawable)
 {
-   uint32_t flush_buf[VCMD_FLUSH_SIZE], vtest_hdr[VTEST_HDR_SIZE];
+   uint32_t flush_buf[VCMD_DT_SIZE], vtest_hdr[VTEST_HDR_SIZE];
+   vtest_hdr[VTEST_CMD_LEN] = VCMD_DT_SIZE;
+   vtest_hdr[VTEST_CMD_ID] = VCMD_DT_COMMAND;
 
-   vtest_hdr[VTEST_CMD_LEN] = VCMD_FLUSH_SIZE;
-   vtest_hdr[VTEST_CMD_ID] = VCMD_FLUSH_FRONTBUFFER;
-
-   flush_buf[VCMD_FLUSH_DRAWABLE] = drawable;
-   flush_buf[VCMD_FLUSH_X] = x;
-   flush_buf[VCMD_FLUSH_Y] = y;
-   flush_buf[VCMD_FLUSH_WIDTH] = w;
-   flush_buf[VCMD_FLUSH_HEIGHT] = h;
-   flush_buf[VCMD_FLUSH_W_X] = w_x;
-   flush_buf[VCMD_FLUSH_W_Y] = w_y;
-   flush_buf[VCMD_FLUSH_HANDLE] = handle;
+   flush_buf[VCMD_DT_CMD] = cmd;
+   flush_buf[VCMD_DT_X] = x;
+   flush_buf[VCMD_DT_Y] = y;
+   flush_buf[VCMD_DT_WIDTH] = w;
+   flush_buf[VCMD_DT_HEIGHT] = h;
+   flush_buf[VCMD_DT_ID] = id;
+   flush_buf[VCMD_DT_HANDLE] = handle;
+   flush_buf[VCMD_DT_DRAWABLE] = drawable;
 
    virgl_block_write(vws, &vtest_hdr, sizeof(vtest_hdr));
    virgl_block_write(vws, &flush_buf, sizeof(flush_buf));
