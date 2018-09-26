@@ -112,8 +112,6 @@ static int virgl_vtest_send_init(struct virgl_vtest_winsys *vws)
    return 0;
 }
 
-DEBUG_GET_ONCE_BOOL_OPTION(ring, "VTEST_RING", false)
-
 int virgl_vtest_connect(struct virgl_vtest_winsys *vws)
 {
    int sock, ret;
@@ -165,10 +163,13 @@ int virgl_vtest_connect(struct virgl_vtest_winsys *vws)
    }
 
    vws->sock_fd = sock;
-   if(debug_get_option_ring())
+   const char *ring = getenv("VTEST_RING");
+   if(ring && ring[0] != '0')
    {
+      if(!strcmp(ring,"1"))
+         ring = "/dev/shm";
       vws->ring = CALLOC_STRUCT(ring_s);
-      ring_setup(vws->ring, sock);
+      ring_setup(vws->ring, sock, ring);
       ring_client_handshake(vws->ring, "glshim");
    }
 
