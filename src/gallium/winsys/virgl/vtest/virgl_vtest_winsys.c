@@ -32,8 +32,23 @@
 #include "virgl_vtest_winsys.h"
 #include "virgl_vtest_public.h"
 
-DEBUG_GET_ONCE_BOOL_OPTION(no_readback, "VTEST_NO_READBACK", false)
-DEBUG_GET_ONCE_BOOL_OPTION(pos_track, "VTEST_POS_TRACKING", false)
+
+
+#define VT_SYNC_COORDS (1U<<0)
+#define VT_IGNORE_MAP (1U<<1)
+#define VT_IGNORE_VIS (1U<<2)
+#define VT_TRACK_EVENTS (1U<<3)
+#define VT_ALWAYS_READBACK (1U<<4)
+static const struct debug_named_value dt_options[] = {
+		{"sync_coords",      VT_SYNC_COORDS,   "Sync coordinates every frame"},
+		{"ignore_map",      VT_SYNC_COORDS,   "Ignore map state"},
+		{"ignore_vis",      VT_SYNC_COORDS,   "Ignore partial visibility"},
+		{"track_events",      VT_SYNC_COORDS,   "Track configure and visibility events"},
+		{"always_readback",      VT_SYNC_COORDS,   "Always read texture back(slow)"},
+		DEBUG_NAMED_VALUE_END
+};
+
+DEBUG_GET_ONCE_FLAGS_OPTION(dt_options, "VTEST_DT_OPTIONS", dt_options, 0)
 
 static void *virgl_vtest_resource_map(struct virgl_winsys *vws,
                                       struct virgl_hw_res *res);
@@ -126,8 +141,12 @@ struct sw_displaytarget *sws_dt;
 Drawable drawable;
 int x,y,w,h;
 int vis;
+bool mapped;
+
 uint32_t id;
 };
+
+static Display *dt_dpy;
 
 static void vtest_displaytarget_destroy(struct virgl_vtest_winsys *vtws, 
                                         struct vtest_displaytarget *dt)
@@ -164,6 +183,10 @@ vtest_displaytarget_create(struct virgl_vtest_winsys *vtws,
 
    virgl_vtest_send_dt(vtws, VCMD_DT_CMD_CREATE, 0, 0, width, height, id, 0, 0);
    vtws->dt_set |= 1 << id;
+
+   if( !dt_dpy )
+      dt_dpy = XOpenDisplay(NULL);
+
    return dt;
 }
 static void virgl_hw_res_destroy(struct virgl_vtest_winsys *vtws,
@@ -632,51 +655,6 @@ static void virgl_fence_reference(struct virgl_winsys *vws,
 }
 
 
-struct win_state
-{
-};
-
-static struct pos_track
-{
-Display *dpy;
-Drawable drawable;
-int x,y,w,h;
-int vis;
-} pos_track;
-
-void* virgl_vtest_pos_track_thread(void* arg);
-
-
-void* virgl_vtest_pos_track_thread(void* arg) {
-
-    XEvent event;
-    XSelectInput(pos_track.dpy, pos_track.drawable,StructureNotifyMask|VisibilityChangeMask);
-    XFlush(pos_track.dpy);
-    while(true) {
-	XNextEvent(pos_track.dpy, &event);
-	switch(event.type) {
-	    case ConfigureNotify:
-		pos_track.x = event.xconfigure.x;
-		pos_track.y = event.xconfigure.y;
-		//printf("configure %d %d\n", pos_track.x, pos_track.y);
-		break;
-		case VisibilityNotify:
-		//printf("visibility %d\n",event.xvisibility.state);
-		pos_track.vis = event.xvisibility.state;
-		break;
-		/*switch(event.xvisibility.state)
-		{
-		case VisibilityUnobscured
-		}*/
-	    default:
-		return NULL;
-		break;
-	}
-
-    }
-}
-
-
 static void virgl_vtest_flush_frontbuffer(struct virgl_winsys *vws,
                                           struct virgl_hw_res *res,
                                           unsigned level, unsigned layer,
@@ -690,6 +668,8 @@ static void virgl_vtest_flush_frontbuffer(struct virgl_winsys *vws,
    uint32_t offset = 0, valid_stride;
    struct xlib_drawable *dr = (struct xlib_drawable*)winsys_drawable_handle;
    struct vtest_displaytarget *dt = res->dt;
+   bool dt_sync_coords = (debug_get_option_dt_options() & VT_SYNC_COORDS);
+   bool dt_visible;
 
    if (!dt)
       return;
@@ -712,37 +692,16 @@ static void virgl_vtest_flush_frontbuffer(struct virgl_winsys *vws,
    virgl_vtest_busy_wait(vtws, res->res_handle, VCMD_BUSY_WAIT_FLAG_WAIT);
 
 
-    XEvent event;
-   if( !pos_track.dpy )
+   if( debug_get_option_dt_options() & VT_TRACK_EVENTS )
    {
-      // if driver cannot interact with x-server,
-      // add ability to draw overlay window
-      // with correct postition. set move notifier to get it
-   //   pthread_t wthread;
-     // XInitThreads();
+      XEvent event;
 
-      pos_track.dpy = XOpenDisplay(NULL);
-     // pos_track.drawable = dr->drawable;
- XSelectInput(pos_track.dpy, dr->drawable,StructureNotifyMask|VisibilityChangeMask);
- XFlush(pos_track.dpy);;
-   
-//      pthread_create(&wthread,NULL,virgl_vtest_pos_track_thread,NULL);
-      usleep(100000);
-      // emit configure event to get initial position
-      XResizeWindow( pos_track.dpy, dr->drawable, res->width, res->height );
-      XFlush(pos_track.dpy);
-      // wait while thread get it
-      usleep(100000);
-   }
-else
-    XSelectInput(pos_track.dpy, dr->drawable,StructureNotifyMask|VisibilityChangeMask);
-    bool changed = false;
-   // XFlush(pos_track.dpy);
-    while(XPending(pos_track.dpy)) {
-	XNextEvent(pos_track.dpy, &event);
-	switch(event.type) {
-	    case ConfigureNotify:
-	    
+      XSelectInput(dt_dpy, dr->drawable,StructureNotifyMask|VisibilityChangeMask);
+
+      while(XPending(dt_dpy)) {
+         XNextEvent(dt_dpy, &event);
+         switch(event.type) {
+            case ConfigureNotify:
 		dt->w = event.xconfigure.width;
 		dt->h = event.xconfigure.height;
 		if(event.xconfigure.send_event)
@@ -750,34 +709,93 @@ else
 		dt->x = event.xconfigure.x;
 		dt->y = event.xconfigure.y;
 		};
-		changed = true;
+		dt_sync_coords = true;
 		//printf("configure %d %d\n", pos_track.x, pos_track.y);
 		break;
-		case VisibilityNotify:
+            case VisibilityNotify:
 		//printf("visibility %d\n",event.xvisibility.state);
 		dt->vis = event.xvisibility.state;
-		changed = true;
+		dt_sync_coords = true;
 		break;
 		/*switch(event.xvisibility.state)
 		{
 		case VisibilityUnobscured
 		}*/
-	    default:
+            default:
 		break;
-	}
+         }
+      }
+   }
 
-    }
+// parent tracking code, use for debug wine drawables detection
+#if 0
 
-//   printf("ll %d %d\n", level, layer);
-//   printf("geom %d %d %d %d %d\n",pos_track.x,pos_track.y, box.z,  box.x, box.y);
+   Window parent = dr->drawable, *children;
+   Drawable root; 
+   while( parent && XQueryTree(dt_dpy, parent, &root, &parent, &children, &tmp) )
+   {
+       XWindowAttributes attrs;
+       int x, y;
 
+printf("parent %d\n", parent);
+      if( !parent ) break;
+      XGetWindowAttributes(dt_dpy, parent, &attrs);
+      printf("attrs %d %d %d\n", attrs.map_state, attrs.x, attrs.y );
+XTranslateCoordinates(dt_dpy,
+                      parent,         // get position for this window
+                      attrs.root,//DefaultRootWindow(pos_track.dpy), // something like macro: DefaultRootWindow(dpy)
+                      attrs.x, attrs.y,        // local left top coordinates of the wnd
+                      &x,     // these is position of wnd in root_window
+                      &y,     // ...
+                      &tmp);
+      printf("translate %d %d\n", x, y );
 
-   if( changed )
-      virgl_vtest_send_dt(virgl_vtest_winsys(vws), VCMD_DT_CMD_SET_RECT, dt->x, dt->y, dt->w, dt->h, dt->id, 0, dt->vis == 0);
-   if( !dt->vis )
+      XFree((char *)children);
+  }
+#endif
+
+   // get coordinates from x11 (slow)
+   if( dt_sync_coords )
+   {
+      int tmp, x, y;
+      XWindowAttributes attrs;
+
+      XGetWindowAttributes(dt_dpy, dr->drawable, &attrs); 
+      // printf("attrs %d %d %d\n", attrs.map_state, attrs.x, attrs.y );
+      // XGetGeometry(dt_dpy, dr->drawable, &root, &x, &y, &dt->w, &dt->h, &tmp, &tmp);
+      XTranslateCoordinates(dt_dpy,
+                      dr->drawable,         // get position for this window
+                      attrs.root,//DefaultRootWindow(pos_track.dpy), // something like macro: DefaultRootWindow(dpy)
+                      attrs.x, attrs.y,        // local left top coordinates of the wnd
+                      &dt->x,     // these is position of wnd in root_window
+                      &dt->y,     // ...
+                      &tmp);
+
+      if( dt->x < 0 || dt->y < 0 )
+      {
+         if( x > 0 && y > 0 ) dt->x = x, dt->y = y;
+         else dt->x = dt->y = 0;
+      }
+
+      if( attrs.width > 0 && attrs.height > 0 )
+         dt->w = attrs.width, dt->h = attrs.height;
+
+      if( dt->w <= 0|| dt->h <= 0 )
+         dt->w = box.width, dt->h = box.height;
+
+      dt->mapped = (attrs.map_state == 2) || (debug_get_option_dt_options() & VT_IGNORE_MAP);
+   }
+
+   dt_visible =  (!dt->vis || ((dt->vis == 1) && (debug_get_option_dt_options() & VT_IGNORE_VIS))) && dt->mapped;
+
+   if( dt_sync_coords )
+      virgl_vtest_send_dt(virgl_vtest_winsys(vws), VCMD_DT_CMD_SET_RECT, dt->x, dt->y, dt->w, dt->h, dt->id, 0, dt_visible);
+  
+
+   if( dt_visible )
       virgl_vtest_send_dt(virgl_vtest_winsys(vws), VCMD_DT_CMD_FLUSH, box.x, box.y, box.width, box.height, dt->id, res->res_handle, (uint32_t)dr->drawable);
 
-   if( (dt->vis != 1) && dt->drawable )
+   if( ( dt_visible || !dt->mapped || dt->vis == 2 ) && dt->drawable && !(debug_get_option_dt_options() & VT_ALWAYS_READBACK)  )
       return;
 
    dt->drawable = dr->drawable;
