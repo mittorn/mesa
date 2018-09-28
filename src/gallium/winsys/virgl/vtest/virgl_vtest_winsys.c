@@ -39,12 +39,16 @@
 #define VT_IGNORE_VIS (1U<<2)
 #define VT_TRACK_EVENTS (1U<<3)
 #define VT_ALWAYS_READBACK (1U<<4)
+#define VT_IGNORE_ATTR_COORDS (1U<<5)
+
 static const struct debug_named_value dt_options[] = {
 		{"sync_coords",      VT_SYNC_COORDS,   "Sync coordinates every frame"},
-		{"ignore_map",      VT_SYNC_COORDS,   "Ignore map state"},
-		{"ignore_vis",      VT_SYNC_COORDS,   "Ignore partial visibility"},
-		{"track_events",      VT_SYNC_COORDS,   "Track configure and visibility events"},
-		{"always_readback",      VT_SYNC_COORDS,   "Always read texture back(slow)"},
+		{"ignore_map",      VT_IGNORE_MAP,   "Ignore map state"},
+		{"ignore_vis",      VT_IGNORE_VIS,   "Ignore partial visibility"},
+		{"track_events",      VT_TRACK_EVENTS,   "Track configure and visibility events"},
+		{"always_readback",      VT_ALWAYS_READBACK,   "Always read texture back(slow)"},
+		{"ignore_attr_coords",      VT_IGNORE_ATTR_COORDS,   "Always read texture back(slow)"},
+
 		DEBUG_NAMED_VALUE_END
 };
 
@@ -692,7 +696,7 @@ static void virgl_vtest_flush_frontbuffer(struct virgl_winsys *vws,
    virgl_vtest_busy_wait(vtws, res->res_handle, VCMD_BUSY_WAIT_FLAG_WAIT);
 
 
-   if( debug_get_option_dt_options() & VT_TRACK_EVENTS )
+   //if( debug_get_option_dt_options() & VT_TRACK_EVENTS )
    {
       XEvent event;
 
@@ -748,8 +752,7 @@ XTranslateCoordinates(dt_dpy,
                       &x,     // these is position of wnd in root_window
                       &y,     // ...
                       &tmp);
-      printf("translate %d %d\n", x, y );
-
+    
       XFree((char *)children);
   }
 #endif
@@ -757,19 +760,23 @@ XTranslateCoordinates(dt_dpy,
    // get coordinates from x11 (slow)
    if( dt_sync_coords )
    {
-      int tmp, x, y;
+      int tmp, x = 0, y = 0;
       XWindowAttributes attrs;
 
-      XGetWindowAttributes(dt_dpy, dr->drawable, &attrs); 
+      XGetWindowAttributes(dt_dpy, dr->drawable, &attrs);
+      if( !(debug_get_option_dt_options() & VT_IGNORE_ATTR_COORDS))
+         x = attrs.x, y = attrs.y;
       // printf("attrs %d %d %d\n", attrs.map_state, attrs.x, attrs.y );
       // XGetGeometry(dt_dpy, dr->drawable, &root, &x, &y, &dt->w, &dt->h, &tmp, &tmp);
       XTranslateCoordinates(dt_dpy,
                       dr->drawable,         // get position for this window
                       attrs.root,//DefaultRootWindow(pos_track.dpy), // something like macro: DefaultRootWindow(dpy)
-                      attrs.x, attrs.y,        // local left top coordinates of the wnd
+                      x, y,        // local left top coordinates of the wnd
                       &dt->x,     // these is position of wnd in root_window
                       &dt->y,     // ...
                       &tmp);
+
+      //printf("translate %d %d\n", dt->x, dt->y );
 
       if( dt->x < 0 || dt->y < 0 )
       {
@@ -785,7 +792,7 @@ XTranslateCoordinates(dt_dpy,
 
       dt->mapped = (attrs.map_state == 2) || (debug_get_option_dt_options() & VT_IGNORE_MAP);
    }
-
+  // printf("vis %d %d\n", dt->vis, dt_visible);
    dt_visible =  (!dt->vis || ((dt->vis == 1) && (debug_get_option_dt_options() & VT_IGNORE_VIS))) && dt->mapped;
 
    if( dt_sync_coords )
