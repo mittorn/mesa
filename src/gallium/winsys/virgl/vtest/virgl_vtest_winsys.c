@@ -672,7 +672,7 @@ static void virgl_vtest_flush_frontbuffer(struct virgl_winsys *vws,
    uint32_t offset = 0, valid_stride;
    struct xlib_drawable *dr = (struct xlib_drawable*)winsys_drawable_handle;
    struct vtest_displaytarget *dt = res->dt;
-   bool dt_sync_coords = (debug_get_option_dt_options() & VT_SYNC_COORDS);
+   bool dt_sync_coords = (debug_get_option_dt_options() & VT_SYNC_COORDS) || (!dt->drawable && !(debug_get_option_dt_options() & VT_ALWAYS_READBACK));
    bool dt_visible;
 
    if (!dt)
@@ -696,7 +696,7 @@ static void virgl_vtest_flush_frontbuffer(struct virgl_winsys *vws,
    virgl_vtest_busy_wait(vtws, res->res_handle, VCMD_BUSY_WAIT_FLAG_WAIT);
 
 
-   //if( debug_get_option_dt_options() & VT_TRACK_EVENTS )
+   if( debug_get_option_dt_options() & VT_TRACK_EVENTS )
    {
       XEvent event;
 
